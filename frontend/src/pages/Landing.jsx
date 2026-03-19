@@ -2,12 +2,6 @@ import React, { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 
-const STATS = [
-  { value: '200+', label: 'Hospitals Connected', icon: '🏥' },
-  { value: '15,000+', label: 'Lives Saved', icon: '❤️' },
-  { value: '24/7', label: 'AI Support', icon: '🤖' },
-]
-
 const STEPS = [
   { step: '01', title: 'Find Hospitals', desc: 'Securely share your location with our AI to find nearby hospitals.', icon: '📍' },
   { step: '02', title: 'AI Matching', desc: 'Our algorithm finds the hospitals with your blood group in seconds.', icon: '🧠' },
@@ -16,24 +10,6 @@ const STEPS = [
 ]
 
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']
-
-function CountUp({ target, suffix = '' }) {
-  const [count, setCount] = useState(0)
-  useEffect(() => {
-    const num = parseInt(target.replace(/\D/g, ''))
-    if (!num) return
-    let start = 0
-    const step = Math.ceil(num / 60)
-    const timer = setInterval(() => {
-      start += step
-      if (start >= num) { setCount(num); clearInterval(timer) }
-      else setCount(start)
-    }, 30)
-    return () => clearInterval(timer)
-  }, [target])
-  const formatted = target.replace(/\d+/, count.toLocaleString())
-  return <span>{formatted}</span>
-}
 
 export default function Landing() {
   const [animate, setAnimate] = useState(false)
@@ -108,23 +84,6 @@ export default function Landing() {
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
-        </div>
-      </section>
-
-      {/* Stats Section */}
-      <section className="py-20 px-6 bg-black/40">
-        <div className="max-w-5xl mx-auto">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 text-center">
-            {STATS.map((stat, i) => (
-              <div key={i} className="glass p-8 rounded-3xl border border-white/5 card-hover">
-                <span className="text-4xl mb-4 block">{stat.icon}</span>
-                <p className="text-4xl sm:text-5xl font-black gradient-text mb-2 tracking-tight">
-                  <CountUp target={stat.value} />
-                </p>
-                <p className="text-gray-500 font-bold text-sm uppercase tracking-widest">{stat.label}</p>
-              </div>
-            ))}
-          </div>
         </div>
       </section>
 
