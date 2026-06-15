@@ -1,6 +1,6 @@
 streamlit
-pandas
+streamlit-geolocation
 numpy
-scikit-learn
-geopy
+pandas
 plotly
+geopy
