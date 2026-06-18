@@ -5,3 +5,4 @@ XGBoost
 Scikit-Learn
 Plotly
 Geopy
+streamlit-geolocation
