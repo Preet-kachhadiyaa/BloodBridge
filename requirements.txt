@@ -1,6 +1,7 @@
-streamlit
-streamlit-geolocation
-numpy
-pandas
-plotly
-geopy
+Streamlit
+Pandas
+NumPy
+XGBoost
+Scikit-Learn
+Plotly
+Geopy

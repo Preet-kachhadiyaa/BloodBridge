@@ -1,0 +1,92 @@
+Run Code : python -m streamlit run app.py
+
+---
+## Blood Bridge - Short Workflow
+1. Load & Clean Data (3 datasets: donors, blood banks, cities)
+2. Map donors/blood banks to cities with lat/lng coordinates
+3. Train XGBoost Model on Donor Data
+4. Calculate AI Scores & Risk Levels for all donors
+5. Show pages for Home, Nearby Hospitals, Nearby Donors, AI Analytics
+
+---
+## AI Score Explained
+- AI Score is a percentage (0-100%) indicating how likely a donor is eligible to donate blood
+- Calculated by the trained XGBoost Classifier model
+- Uses 5 donor features to make prediction:
+  1. Age
+  2. Gender
+  3. Blood Group
+  4. City
+  5. Days Since Last Donation
+- Model outputs a probability (0-1), multiplied by 100 to get AI Score (0-100)
+- Higher AI Score = more confident model is that the donor is eligible!
+
+---
+## Risk Levels Explained
+- LOW Risk: AI Score ≥80% → Very confident donor is eligible
+- MEDIUM Risk: 60-79% AI Score → Moderately confident
+- HIGH Risk: <60% AI Score → Low confidence
+
+---
+## Model Used
+- **XGBoost Classifier** (Extreme Gradient Boosting)
+- Features: Age, Gender, Blood Group, City, Days Since Last Donation
+- Target: Donor Eligibility (eligible_for_donation)
+- Performance Metrics: Accuracy, Precision, Recall, F1-Score
+
+---
+## Data Overview
+- **blood_donation.csv**: Donor info (name, age, gender, blood group, location, eligibility, last donation date)
+- **blood_bank_data.csv**: Blood bank info (name, location, contact, category)
+- **india_real_cities.csv**: Indian cities with latitude & longitude coordinates
+
+---
+## Data Persistence
+Important: 
+- Original CSV files are **not modified**
+- AI scores/predictions are only calculated in memory
+- No donor/hospital results are saved to disk/database
+
+## Model Persistence
+- Trained XGBoost model + label encoders are saved to `model.pkl` in the project folder after first training
+- Subsequent app runs load `model.pkl` instead of retraining
+- To retrain model, delete `model.pkl` and restart the app
+
+
+| Component     | Technology             |
+| ------------- | ---------------------- |
+| Frontend      | Streamlit              |
+| Backend       | Python                 |
+| Database      | CSV Files              |
+| AI Model      | XGBoost                |
+| Maps          | Google Maps            |
+| Visualization | Plotly                 |
+| ML Libraries  | Scikit-Learn + XGBoost |
+
+
+
+X Values :
+
+| Feature                  | Purpose         |
+| ------------------------ | --------------- |
+| Age                      | Donor age       |
+| Gender                   | Male/Female     |
+| Blood Group              | A+, B+, O+, etc |
+| City                     | Location        |
+| Days Since Last Donation | Recovery status |
+
+Y Value :
+| Variable              |
+| --------------------- |
+| eligible_for_donation |
+
+
+Data Preprocessing
+Label Encoding : Male 0, Female 1
+
+
+Evaluation Metrics:
+Accuracy
+Precision
+Recall
+F1 Score

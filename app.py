@@ -12,9 +12,20 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from pathlib import Path
+import joblib
 from geopy.distance import geodesic
+from xgboost import XGBClassifier
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score
+)
 
-try:
+try:    
     from streamlit_geolocation import streamlit_geolocation
 except ImportError:
     streamlit_geolocation = None
@@ -79,19 +90,30 @@ def maps(lat, lon):
     return f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
 
 
-def haversine(a1, o1, a2, o2):
-    r = 6371.0
-    p1, p2 = math.radians(a1), math.radians(a2)
-    dp, dl = math.radians(a2 - a1), math.radians(o2 - o1)
-    x = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return r * 2 * math.atan2(math.sqrt(x), math.sqrt(1 - x))
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    delta_lat = math.radians(lat2 - lat1)
+    delta_lon = math.radians(lon2 - lon1)
+
+    a = math.sin(delta_lat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    distance = R * c
+    return distance
 
 
 def dist(origin, target):
     try:
+        # origin is (lat, lon), target is (lat, lon)
         return haversine(origin[0], origin[1], target[0], target[1])
-    except Exception:
-        return geodesic(origin, target).km
+    except Exception as e:
+        # If haversine fails, try geodesic
+        try:
+            return geodesic(origin, target).km
+        except Exception:
+            return 0.0
 
 
 def dtext(km):
@@ -163,8 +185,10 @@ def load_data():
     donors["eligible_for_donation"] = donors["eligible_for_donation"].fillna("No").astype(str).str.lower().eq("yes")
     donors["last_donation_date"] = pd.to_datetime(donors["last_donation_date"], errors="coerce", dayfirst=True)
     donors["city_norm"] = donors["city"].map(norm)
-    donors = donors.merge(city_ref[["city_norm", "city", "latitude", "longitude"]], on="city_norm", how="left", suffixes=("", "_mapped"))
-    donors["city_display"] = donors["city_mapped"].fillna(donors["city"]).map(tcase)
+    # Use latitude and longitude directly from blood_donation.csv
+    donors["latitude"] = pd.to_numeric(donors["latitude"], errors="coerce")
+    donors["longitude"] = pd.to_numeric(donors["longitude"], errors="coerce")
+    donors["city_display"] = donors["city"].map(tcase)
     donors["eligibility_label"] = np.where(donors["eligible_for_donation"], "Eligible", "Needs recovery time")
 
     banks = banks.copy()
@@ -234,6 +258,40 @@ def load_data():
             )
     demand = pd.DataFrame(demand_rows)
     return {"banks": banks, "donors": donors, "inventory": inventory, "cities": service_cities, "demand": demand, "paths": {"banks": p_b, "donors": p_d, "cities": p_c}}
+
+
+@st.cache_resource
+def train_xgb_model(donors):
+    df = donors.copy()
+    df["target"] = df["eligible_for_donation"].astype(int)
+    df["days_since_last_donation"] = (pd.Timestamp.now() - df["last_donation_date"]).dt.days.fillna(365)
+
+    le_gender = LabelEncoder()
+    le_bg = LabelEncoder()
+    le_city = LabelEncoder()
+
+    df["gender_enc"] = le_gender.fit_transform(df["gender"].astype(str))
+    df["blood_group_enc"] = le_bg.fit_transform(df["blood_group"].astype(str))
+    df["city_enc"] = le_city.fit_transform(df["city"].astype(str))
+
+    X = df[["age", "gender_enc", "blood_group_enc", "city_enc", "days_since_last_donation"]]
+    y = df["target"]
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    model = XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.05, subsample=0.9, colsample_bytree=0.9, random_state=42)
+    model.fit(X_train, y_train)
+
+    pred = model.predict(X_test)
+
+    metrics = {
+        "accuracy": accuracy_score(y_test, pred),
+        "precision": precision_score(y_test, pred),
+        "recall": recall_score(y_test, pred),
+        "f1": f1_score(y_test, pred),
+    }
+
+    return model, metrics, le_gender, le_bg, le_city
 
 
 def valid_coords(lat, lon):
@@ -313,11 +371,11 @@ def nearby_hospitals(banks, inventory, group, origin, radius):
 def nearby_donors(donors, group, origin, radius, eligible_only=True):
     df = donors[donors["blood_group"] == group].copy()
     if eligible_only:
-        df = df[df["eligible_for_donation"]]
+        df = df[df["eligible_for_donation"] & df["ai_prediction"]]
     df = df.dropna(subset=["latitude", "longitude"]).copy()
     df["distance_km"] = df.apply(lambda r: dist(origin, (r["latitude"], r["longitude"])), axis=1)
     df["maps_link"] = df.apply(lambda r: maps(r["latitude"], r["longitude"]), axis=1)
-    return df[df["distance_km"] <= radius].sort_values(["distance_km", "last_donation_date"]).reset_index(drop=True)
+    return df[df["distance_km"] <= radius].sort_values(["distance_km", "ai_score"], ascending=[True, False]).reset_index(drop=True)
 
 
 def result_cards(df, kind, limit=10):
@@ -338,14 +396,15 @@ def result_cards(df, kind, limit=10):
             )
         else:
             last = r.last_donation_date.strftime("%d %b %Y") if pd.notna(r.last_donation_date) else "Unknown"
+            risk_pill = ("✅ LOW Risk", "ok") if r.risk_level == "LOW" else ("⚠️ MEDIUM Risk", "warn") if r.risk_level == "MEDIUM" else ("❌ HIGH Risk", "bad")
             row_card(
                 f"🧑‍⚕️ {r.full_name}",
                 [
                     f"<strong>Blood Group:</strong> {html.escape(str(r.blood_group))} | <strong>City:</strong> {html.escape(str(r.city_display))}",
                     f"<strong>Contact:</strong> {html.escape(str(r.contact_number))} | <strong>Distance:</strong> {dtext(float(r.distance_km))}",
-                    f"<strong>Last Donation:</strong> {last}",
+                    f"<strong>Last Donation:</strong> {last} | <strong>AI Score:</strong> {r.ai_score:.1f}%",
                 ],
-                [(f"❤️ {r.eligibility_label}", "ok" if r.eligible_for_donation else "bad"), (f"📍 {dtext(float(r.distance_km))}", "warn")],
+                [(f"❤️ {r.eligibility_label}", "ok" if r.eligible_for_donation else "bad"), risk_pill, (f"📍 {dtext(float(r.distance_km))}", "warn")],
                 r.maps_link,
             )
 
@@ -416,6 +475,56 @@ def page_analytics(banks, donors, inventory, demand):
         st.plotly_chart(fig, use_container_width=True)
 
 
+def page_ai_analytics(metrics, model):
+    st.markdown("## 🤖 XGBoost Model Dashboard")
+    st.caption("AI model performance and key features for donor eligibility prediction.")
+    
+    # Show model metrics
+    st.markdown("### Model Performance Metrics")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Accuracy", f"{metrics['accuracy']:.2%}")
+    c2.metric("Precision", f"{metrics['precision']:.2%}")
+    c3.metric("Recall", f"{metrics['recall']:.2%}")
+    c4.metric("F1 Score", f"{metrics['f1']:.2%}")
+    
+    # Explain each metric
+    with st.expander("What do these metrics mean?"):
+        st.markdown("""
+        - **Accuracy**: % of total predictions that are correct
+        - **Precision**: % of predicted "eligible" donors who are actually eligible (avoids false positives)
+        - **Recall**: % of actual eligible donors the model correctly identifies (avoids missing eligible donors)
+        - **F1 Score**: Balance of precision and recall
+        """)
+
+    # Show feature importance
+    st.markdown("### Feature Importance")
+    imp = pd.DataFrame({
+        "Feature": ["Age", "Gender", "Blood Group", "City", "Days Since Last Donation"],
+        "Importance": model.feature_importances_
+    })
+    st.plotly_chart(
+        px.bar(
+            imp,
+            x="Feature",
+            y="Importance",
+            color="Importance",
+            title="XGBoost Feature Importance"
+        ),
+        use_container_width=True
+    )
+    
+    # Explain feature importance
+    with st.expander("What does feature importance mean?"):
+        st.markdown("""
+        Shows which factors the XGBoost model uses most to predict donor eligibility:
+        - **Age**: How old the donor is
+        - **Gender**: Donor's gender
+        - **Blood Group**: Donor's blood type (A+, B+, O+, etc.)
+        - **City**: Donor's city
+        - **Days Since Last Donation**: How many days since they last donated blood
+        """)
+
+
 def main():
     css()
     st.sidebar.markdown("## 🩸 Blood Bridge")
@@ -431,10 +540,56 @@ def main():
         st.stop()
 
     banks, donors, inventory, cities, demand = data["banks"], data["donors"], data["inventory"], data["cities"], data["demand"]
-    pages = ["Home Page", "Nearby Hospitals", "Nearby Donors"]
+    
+    # Define path to save/load model
+    model_path = Path(__file__).parent / "model.pkl"
+    
+    if model_path.exists():
+        # Load existing model, encoders, and metrics
+        with st.spinner("Loading saved model..."):
+            saved_data = joblib.load(model_path)
+            model = saved_data["model"]
+            metrics = saved_data["metrics"]
+            le_gender = saved_data["le_gender"]
+            le_bg = saved_data["le_bg"]
+            le_city = saved_data["le_city"]
+    else:
+        # Train new model and save it
+        with st.spinner("Training XGBoost model... (this may take a moment)"):
+            model, metrics, le_gender, le_bg, le_city = train_xgb_model(donors)
+            # Save model and encoders to model.pkl
+            joblib.dump({
+                "model": model,
+                "metrics": metrics,
+                "le_gender": le_gender,
+                "le_bg": le_bg,
+                "le_city": le_city
+            }, model_path)
+    
+    # Add AI predictions to donors
+    donors = donors.copy()
+    donors["days_since_last_donation"] = (pd.Timestamp.now() - donors["last_donation_date"]).dt.days.fillna(365)
+    donors["gender_enc"] = le_gender.transform(donors["gender"].astype(str))
+    donors["blood_group_enc"] = le_bg.transform(donors["blood_group"].astype(str))
+    donors["city_enc"] = le_city.transform(donors["city"].astype(str))
+    X_pred = donors[["age", "gender_enc", "blood_group_enc", "city_enc", "days_since_last_donation"]]
+    donors["ai_score"] = model.predict_proba(X_pred)[:, 1] * 100
+    donors["ai_prediction"] = donors["ai_score"] >= 50
+    #Health Score ..
+    donors["risk_level"] = np.where(
+        donors["ai_score"] >= 80,
+        "LOW",
+        np.where(
+            donors["ai_score"] >= 60,
+            "MEDIUM",
+            "HIGH"
+        )
+    )
+    
+    pages = ["Home Page", "Nearby Hospitals", "Nearby Donors", "AI Analytics"]
     page = st.sidebar.radio("Navigation", pages)
     city_list = cities["city"].sort_values().tolist()
-    default_city = "Delhi" if "Delhi" in city_list else city_list[0]
+    default_city = "Surat" if "Surat" in city_list else city_list[0]
 
     st.sidebar.markdown("### Search controls")
     if "location_mode" not in st.session_state:
@@ -490,10 +645,12 @@ def main():
             show_tables(hospitals, pd.DataFrame(columns=EMPTY_D))
     elif page == "Nearby Donors":
         st.markdown("## Nearby Donors")
-        st.caption("Eligible donor matches for the selected blood group, ranked by nearest distance.")
+        st.caption("Eligible donor matches for the selected blood group, ranked by nearest distance and AI score.")
         result_cards(donors_near, "donor", 20)
         with st.expander("View donors in table format"):
             show_tables(pd.DataFrame(columns=EMPTY_H), donors_near)
+    elif page == "AI Analytics":
+        page_ai_analytics(metrics, model)
 
 
 if __name__ == "__main__":
